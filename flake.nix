@@ -11,30 +11,12 @@
       let pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [ gcc gnumake ];
+          buildInputs = with pkgs; [ gcc gnumake sqlite ];
 
           shellHook = ''
             echo "C++ development environment loaded"
-            echo "Compile with: g++ -std=c++17 -O2 main.cpp -o multiverse"
+            echo "Compile with: g++ -std=c++17 -O2 main.cpp board_id.cpp ruleset_id.cpp database.cpp -lsqlite3 -o multiverse"
             echo "Run with: ./multiverse"
-          '';
-        };
-
-        packages.default = pkgs.stdenv.mkDerivation {
-          pname = "multiverse";
-          version = "0.1.0";
-
-          src = ./.;
-
-          buildInputs = with pkgs; [ gcc ];
-
-          buildPhase = ''
-            g++ -std=c++17 -O2 main.cpp -o multiverse
-          '';
-
-          installPhase = ''
-            mkdir -p $out/bin
-            cp multiverse $out/bin/
           '';
         };
       });

@@ -118,7 +118,6 @@ BoundingBox findBoundingBox(const vector<vector<int>> &board)
             }
         }
     }
-
     return box;
 }
 
@@ -142,7 +141,6 @@ vector<vector<int>> trimBoard(const vector<vector<int>> &board)
             trimmed[i][j] = board[box.minRow + i][box.minCol + j];
         }
     }
-
     return trimmed;
 }
 
@@ -175,7 +173,6 @@ vector<vector<int>> addMargin(const vector<vector<int>> &board)
             expanded[i + 1][j + 1] = board[i][j];
         }
     }
-
     return expanded;
 }
 
@@ -217,7 +214,6 @@ vector<vector<int>> evolveWithRules(const vector<vector<int>> &board, const Univ
             }
         }
     }
-
     return next;
 }
 
@@ -238,7 +234,6 @@ vector<UniverseRules> generateAllRulesets()
             }
         }
     }
-
     return rulesets;
 }
 
@@ -301,7 +296,7 @@ map<int, int> newFilesPerGeneration;
 
 void createMockFile(const vector<vector<int>> &trimmedBoard, int targetGen, int sourceGen, const string &sourceSeed)
 {
-    string genFolder = "gen" + to_string(targetGen);
+    string genFolder = "data/gen" + to_string(targetGen);
     fs::create_directories(genFolder);
 
     string filename = sourceSeed + "-gen" + to_string(sourceGen) + ".txt";
@@ -357,7 +352,7 @@ string checkForClone(const vector<vector<int>> &board, int currentGen, const str
 
     if (targetGen < currentGen)
     {
-        string targetGenFolder = "gen" + to_string(targetGen);
+        string targetGenFolder = "data/gen" + to_string(targetGen);
 
         if (fs::exists(targetGenFolder))
         {
@@ -401,7 +396,7 @@ string checkForClone(const vector<vector<int>> &board, int currentGen, const str
 
 void saveGeneration(vector<BoardState> &states, int generation)
 {
-    string dirName = "gen" + to_string(generation);
+    string dirName = "data/gen" + to_string(generation);
     fs::create_directories(dirName);
 
     // Get existing files before we start
@@ -495,7 +490,6 @@ vector<BoardState> evolveFromParent(const vector<vector<int>> &parentBoard, cons
             uniqueBoards.push_back({newBoard, parentSeed, {seed}, ""});
         }
     }
-
     return uniqueBoards;
 }
 
@@ -587,12 +581,25 @@ int main(int argc, char *argv[])
     else
     {
         string inputFolder = argv[1];
-        string genStr = inputFolder.substr(3);
-        int currentGen = stoi(genStr);
-        int nextGen = currentGen + 1;
+
+        // If user didn't include "data/" prefix, add it
+        if (inputFolder.find("data/") != 0)
+        {
+            inputFolder = "data/" + inputFolder;
+        }
 
         vector<BoardState> nextGenStates = evolveGenerationFromFolder(inputFolder);
-        saveGeneration(nextGenStates, nextGen);
+
+        // Extract generation number from path (data/gen3 -> 3 or gen3 -> 3)
+        size_t genPos = inputFolder.find("gen");
+        if (genPos != string::npos)
+        {
+            string genStr = inputFolder.substr(genPos + 3);
+            int currentGen = stoi(genStr);
+            int nextGen = currentGen + 1;
+
+            saveGeneration(nextGenStates, nextGen);
+        }
 
         // Print summary for all generations that had new files
         for (auto &[gen, count] : newFilesPerGeneration)
@@ -600,6 +607,5 @@ int main(int argc, char *argv[])
             cout << "gen" << gen << ": " << count << " new files" << endl;
         }
     }
-
     return 0;
 }

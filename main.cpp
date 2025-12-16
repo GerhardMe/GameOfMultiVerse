@@ -86,7 +86,7 @@ void testRulesets()
 int main()
 {
     // Test boards
-    vector<vector<int>> board1 = {{1}};
+    vector<vector<int>> board1 = {{0}};
     testBoard(board1, "Test 1: 1x1");
 
     vector<vector<int>> board2 = {

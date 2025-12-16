@@ -334,14 +334,22 @@ This process is deterministic and stateless.
 
 ## Expanded Database Row Size
 
-An expanded row contains:
+When a board is expanded, its database row stores **all evolution results**
+for every ruleset.
+
+An expanded row consists of:
 
 ```
 1 metadata byte
-+ 330 × child Board ID size
++ 330 × child Board ID
 ```
 
-Example:
+The size of each child Board ID is derived deterministically from the
+parent board size.
+
+---
+
+### Example Sizes
 
 | Parent Board | Parent ID Bits | Child Board | Child ID Bits | All Children Bits | Full Expanded Board Object Size |
 |-------------|----------------|-------------|---------------|-------------------|----------------------------------|
@@ -350,9 +358,78 @@ Example:
 | 5×5 | 6 | 7×7 | 10 | 3,300 | ~413 B |
 | 7×7 | 10 | 9×9 | 15 | 4,950 | ~620 B |
 | 101×101 | 2,601 | 103×103 | 2,703 | 891,990 | ~109 KB |
-| 1,803×1,803 | 406,351 | 1,805×1,805 | 407,253 | 134,393,490 | ~16.1 MB |
+| 1,801×1,801 | 406,351 | 1,803×1,803 | 407,253 | 134,393,490 | ~16.1 MB |
 
 ---
+
+## BLOB and MEDIUMBLOB Size Constraints
+
+The database schema relies on **MySQL binary large object (BLOB) limits**.
+
+---
+
+### `board_id` (BLOB)
+
+- **Type:** `BLOB`  
+- **Maximum size:** 65,535 bytes (~64 KB)  
+- **Purpose:** Stores a single Board ID  
+- **Note:** Board ID size depends solely on the board's dimension  
+
+The maximum theoretical storage in bits:
+
+```
+65,535 bytes × 8 = 524,280 bits
+```
+
+This corresponds to a maximum board size of:
+
+```
+√(524,280 × 8) ≈ 2,047
+```
+
+> i.e., this supports boards up to **2,047×2,047 cells**.
+
+---
+
+### `children` (MEDIUMBLOB)
+
+- **Type:** `MEDIUMBLOB`  
+- **Maximum size:** 16,777,215 bytes (~16 MB)  
+- **Purpose:** Stores metadata and 330 child Board IDs  
+
+This field determines the **practical system limit**, because it must
+store all evolution results for a board.  
+
+---
+
+## Maximum Supported Board Size
+
+Because each expanded row contains **330 child boards**, the parent board
+size is limited by the size of its children.
+
+- **Maximum child board:** 1,803×1,803  
+- **Maximum parent board:** 1,801×1,801  
+
+At this limit:
+
+- **Child Board ID size:** ~50.9 KB  
+- **All 330 children:** ~16.1 MB  
+
+This fits safely within the `MEDIUMBLOB` limit.  
+
+> Any larger parent board would produce children that exceed the `MEDIUMBLOB` capacity.  
+> Therefore, **boards of 1,801×1,801 cells are the hard maximum**.  
+
+---
+
+### Summary
+
+- `board_id` is limited by `BLOB` (~64 KB)  
+- Expanded rows are limited by `MEDIUMBLOB` (~16 MB)  
+- The **children field**, not the parent board itself, sets the practical system limit  
+- Maximum parent board size: **1,801×1,801**  
+- Maximum child board size: **1,803×1,803**
+
 
 ## Access Patterns
 

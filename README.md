@@ -1,20 +1,35 @@
-# Game of Life Canonical ID System
+# Game of Life Canonical Board and Ruleset ID System
 
 ## Overview
 
 This project defines a canonical, space-efficient representation for symmetric
-Game of Life boards and their evolution across multiple rulesets.
+Game of Life boards and their evolution under multiple rulesets.
 
-Two deterministic ID systems are provided:
+The system is built around two deterministic identifier schemes:
 
-1. **Board ID**  
-   A compact binary identifier representing a symmetric Game of Life board.
+1. **Board IDs**  
+   Compact binary identifiers that encode symmetric Game of Life boards.
 
-2. **Ruleset ID**  
-   A sequential numeric identifier representing a valid Game of Life ruleset.
+2. **Ruleset IDs**  
+   Sequential numeric identifiers that enumerate all valid Game of Life rulesets.
 
-These IDs are used consistently across in-memory computation and persistent
-storage.
+Board IDs are used as primary keys in the database and contain **only board state**.
+All metadata is stored separately.
+
+---
+
+## Conceptual Model
+
+It is essential to distinguish between three different representations:
+
+1. **Logical Board**  
+   The full `N × N` grid of cells in memory.
+
+2. **Board ID**  
+   A compressed binary representation exploiting symmetry.
+
+3. **Database Row**  
+   A stored record that may include evolution results for many rulesets.
 
 ---
 
@@ -22,13 +37,18 @@ storage.
 
 ### Purpose
 
-A **Board ID** is a canonical, deterministic binary representation of a Game of
-Life board that satisfies **8-fold symmetry**. The ID encodes *only* the board
-state and contains no metadata.
+A **Board ID** is a canonical, deterministic, and minimal binary representation
+of a Game of Life board that satisfies **8-fold symmetry**.
+
+The ID:
+- Encodes only cell state
+- Contains no generation num or metadata
+- Is identical for identical boards
+- size of board is derived from ID length in bits
 
 ---
 
-### Symmetry Model
+### Symmetry Assumption
 
 All boards are assumed to be symmetric under:
 
@@ -36,21 +56,26 @@ All boards are assumed to be symmetric under:
 - Vertical reflection
 - Reflection across both diagonals
 
-This allows the board to be uniquely represented by storing only the
-upper-left diagonal triangular region.
+Because of this, only a triangular subset of the board must be stored.
 
 ---
 
 ### Stored Region Definition
 
-For a board of odd dimension `N = 2k + 1`, only the following cells are stored:
+Boards always have odd dimensions:
+
+```
+N = 2k + 1
+```
+
+Only the upper-left diagonal triangle (including the center cell) is stored:
 
 - Row `0`: columns `0 → k`
 - Row `1`: columns `1 → k`
 - …
 - Row `k`: column `k`
 
-This region forms a right triangular matrix including the center cell.
+This region uniquely determines the full board.
 
 ---
 
@@ -82,35 +107,33 @@ Stored bits: `a b c d e f` (6 bits)
 
 ---
 
-### Bit Count Formula
+### Board Size as ID and raw
 
-Let:
+A logical board of size `N × N` contains:
 
 ```
-N = 2k + 1
+N² cells (bits)
 ```
-
-Then the number of stored bits is:
+For a board of size `N = 2k + 1`, the number of stored bits is:
 
 ```
 bits = (k + 1)(k + 2) / 2
 ```
 
-| Board Size | Bits |
-|-----------|------|
-| 1×1 | 1 |
-| 3×3 | 3 |
-| 5×5 | 6 |
-| 7×7 | 10 |
-| 101×101 | 2,601 |
-
----
+| Board Size | ID Bits | Raw Board Bits / Num Cells |
+|-----------|---------|----------------|
+| 1×1 | 1 | 1 |
+| 3×3 | 3 | 9 |
+| 5×5 | 6 | 25 |
+| 7×7 | 10 | 49 |
+| 101×101 | 2,601 | 10,201 |
+| 1,803×1,803 | 406,351 | 3,250,809 |
 
 ### Reconstruction
 
 To reconstruct a full board:
 
-1. Place stored bits into the diagonal triangular region
+1. Place stored bits into the diagonal triangle
 2. Mirror each cell into its 8 symmetric positions
 
 This process is lossless and deterministic.
@@ -130,7 +153,7 @@ std::vector<std::vector<int>> idToBoard(std::uint64_t id, int size);
 
 ### Purpose
 
-Each valid Game of Life ruleset is assigned a unique integer identifier.
+Each valid Game of Life ruleset is assigned a unique integer ID.
 The mapping is deterministic and reversible.
 
 ---
@@ -159,9 +182,9 @@ A ruleset is valid if:
 
 ---
 
-### ID Assignment
+### Enumeration Order
 
-Rulesets are enumerated in lexicographic order:
+Rulesets are enumerated lexicographically:
 
 ```
 for a = 0..7
@@ -171,8 +194,8 @@ for a = 0..7
         assign next ID to {a,b,c,d}
 ```
 
-- Total valid rulesets: **5,005**
-- ID range: `0–5004`
+- Total valid rulesets: **330**
+- ID range: `0–329`
 
 ---
 
@@ -181,7 +204,7 @@ for a = 0..7
 ```cpp
 int rulesetToId(const Ruleset& ruleset);
 Ruleset idToRuleset(int id);
-int getTotalRulesets();  // returns 5005
+int getTotalRulesets();  // returns 330
 ```
 
 ---
@@ -190,8 +213,8 @@ int getTotalRulesets();  // returns 5005
 
 ### Overview
 
-The database stores boards and all of their evolution results using a
-single-table design optimized for space efficiency and lookup speed.
+All boards and their evolution results are stored in a single table.
+Each row corresponds to one canonical board.
 
 ---
 
@@ -200,27 +223,21 @@ single-table design optimized for space efficiency and lookup speed.
 ```sql
 CREATE TABLE boards (
     board_id   BLOB PRIMARY KEY,
-    generation INTEGER NOT NULL,
-    size       INTEGER NOT NULL,
     children   MEDIUMBLOB
 );
 
-CREATE INDEX idx_generation ON boards(generation);
-CREATE INDEX idx_size ON boards(size);
 ```
 
 ---
 
-## Board ID Storage
+## `children` MEDIUMBLOB Format
 
-- Stored as `BLOB`
-- Contains only the compressed board bits
-- No metadata or size information
-- Canonical and deterministic
+### Purpose
+
+The `children` field stores the evolution results of a board under
+all rulesets.
 
 ---
-
-## `children` MEDIUMBLOB Format
 
 ### Layout
 
@@ -231,7 +248,7 @@ Byte 0:
   Bits 2–7 → unused (0)
 
 Byte 1+:
-  330 evolution Board IDs, stored sequentially
+  330 child Board IDs stored sequentially
 ```
 
 ---
@@ -241,35 +258,25 @@ Byte 1+:
 | Bit | Meaning |
 |----|--------|
 | 0 | 0 = unexpanded, 1 = expanded |
-| 1 | 0 = normal origin, 1 = created by shrinking |
+| 1 | 0 = normal origin, 1 = only created by shrinking larger board |
 
 ---
 
-## Variable-Length Board IDs in `children`
+## Variable-Length Child Board IDs
 
-### Design Principle
+### Fundamental Rule
 
-Board IDs stored in `children` are **variable-length**. Their length is
-**not explicitly stored**. Instead, it is derived deterministically from
-the parent board size.
-
-This guarantees unambiguous parsing while minimizing storage.
-
----
-
-### Growth Rule
-
-Each evolution produces a board that is **one outer cell layer larger**
+Each evolution produces a board that is **exactly one outer cell layer larger**
 than its parent.
 
-As a consequence:
-- The logical board size increases by 2
-- The stored diagonal triangle gains **exactly one additional row**
-- The Board ID requires more bits than the parent ID
+As a result:
+- The logical board dimension increases by 2
+- The stored diagonal triangle gains one new row
+- The Board ID increases in length deterministically
 
 ---
 
-### Bit-Length Derivation
+### Bit-Length Growth
 
 Let the parent board size be:
 
@@ -277,7 +284,7 @@ Let the parent board size be:
 N = 2k + 1
 ```
 
-Parent ID bit count:
+Parent ID bits:
 
 ```
 (k + 1)(k + 2) / 2
@@ -289,7 +296,7 @@ Child board size:
 2(k + 1) + 1
 ```
 
-Child ID bit count:
+Child ID bits:
 
 ```
 (k + 2)(k + 3) / 2
@@ -297,49 +304,50 @@ Child ID bit count:
 
 ---
 
-### Bit Increase per Evolution
+### Increase per Evolution
 
 ```
-Δbits = (k + 2)
+Δbits = k + 2
 ```
 
-This corresponds exactly to the new diagonal row added to the stored region.
+This corresponds exactly to the additional diagonal row.
 
 ---
 
-### Example
+### MEDIUMBLOB Parsing Rule
 
-| Board | Stored Rows | ID Bits |
-|-----|------------|--------|
-| 5×5 (`k=2`) | 3 | 6 |
-| 7×7 (`k=3`) | 4 | 10 |
+No child ID length is stored explicitly.
 
-The child ID is longer by 4 bits, matching the additional diagonal row.
+To parse the `children` BLOB:
 
----
+1. Read the metadata byte
+2. Read the parent board size
+3. Compute `k = (size − 1) / 2`
+4. Compute child ID bit-length
+5. Convert to byte length (ceil)
+6. Read exactly that many bytes
+7. Repeat for all 330 children
 
-### MEDIUMBLOB Parsing Procedure
-
-After reading the metadata byte:
-
-1. Read the parent board size
-2. Compute `k = (size − 1) / 2`
-3. Compute child ID bit-length using the formula above
-4. Convert bits to bytes (ceil)
-5. Read exactly that many bytes
-6. Repeat for all 330 evolution entries
-
-No per-entry size markers are required.
+This process is deterministic and stateless.
 
 ---
 
-## Storage Characteristics
+## Expanded Database Row Size
 
-| Board Size | ID Size | Expanded Row Size |
-|-----------|--------|------------------|
-| 5×5 | 1 byte | ~340 bytes |
-| 101×101 | 326 bytes | ~108 KB |
-| 1,803×1,803 | ~50 KB | ~16.7 MB |
+An expanded row contains:
+
+```
+1 metadata byte
++ 330 × child Board ID size
+```
+
+Example:
+
+| Parent Board | Child Board | Child ID Size | Expanded Row Size |
+|-------------|------------|---------------|-------------------|
+| 5×5 | 7×7 | 2 bytes | ~661 bytes |
+| 101×101 | 103×103 | 351 bytes | ~116 KB |
+| 1,803×1,803 | 1,805×1,805 | ~51 KB | ~16.8 MB |
 
 ---
 
@@ -364,24 +372,14 @@ VALUES (?, ?, ?, X'00');
 ### Read Evolution Result
 
 - Offset into `children` after metadata byte
-- Offset determined solely by computed Board ID length
+- Offset derived solely from computed Board ID length
 
 ---
 
 ### Mark Board as Expanded
 
-- Replace `children` with metadata byte + 330 evolution IDs
+- Replace `children` with metadata byte + 330 child IDs
 - Set expanded flag (bit 0)
-
----
-
-## System Properties
-
-- Board IDs contain only board state
-- ID length is deterministic and derived
-- MEDIUMBLOB parsing is stateless
-- No redundant metadata is stored
-- Each board has exactly one canonical representation
 
 ---
 
@@ -400,3 +398,13 @@ VALUES (?, ?, ?, X'00');
 ```bash
 g++ -std=c++17 -O2 main.cpp board_id.cpp ruleset_id.cpp -o multiverse
 ```
+
+---
+
+## System Guarantees
+
+- Every board has exactly one canonical Board ID
+- Board ID size is minimal and deterministic
+- Child ID size is derived, never stored
+- Database parsing requires no auxiliary metadata
+- Storage overhead scales linearly with board growth

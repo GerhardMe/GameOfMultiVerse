@@ -52,7 +52,7 @@ vector<vector<int>> idToBoard(uint64_t id, int size)
     vector<vector<int>> board(size, vector<int>(size, 0));
     int center = size / 2;
 
-    // Count total bits
+    // Count total bits needed
     int totalBits = 0;
     for (int row = 0; row <= center; row++)
     {
@@ -61,7 +61,7 @@ vector<vector<int>> idToBoard(uint64_t id, int size)
 
     int bitPos = totalBits - 1; // Start from MSB
 
-    // Place bits back into diagonal triangle
+    // Place bits and apply 8-fold symmetry for each bit
     for (int row = 0; row <= center; row++)
     {
         int colStart = row;
@@ -70,27 +70,21 @@ vector<vector<int>> idToBoard(uint64_t id, int size)
         for (int col = colStart; col <= colEnd; col++)
         {
             int bit = (id >> bitPos) & 1;
-            board[row][col] = bit;
+
+            if (bit == 1)
+            {
+                // Place in all 8 symmetric positions
+                board[row][col] = 1;                       // Original
+                board[row][size - 1 - col] = 1;            // Mirror across vertical axis
+                board[size - 1 - row][col] = 1;            // Mirror across horizontal axis
+                board[size - 1 - row][size - 1 - col] = 1; // Mirror across both axes
+                board[col][row] = 1;                       // Mirror across main diagonal
+                board[col][size - 1 - row] = 1;            // Diagonal + vertical
+                board[size - 1 - col][row] = 1;            // Diagonal + horizontal
+                board[size - 1 - col][size - 1 - row] = 1; // Diagonal + both
+            }
+
             bitPos--;
-        }
-    }
-
-    // Apply 8-fold symmetry
-    // 1. Mirror left-to-right (vertical axis)
-    for (int row = 0; row <= center; row++)
-    {
-        for (int col = 0; col <= center; col++)
-        {
-            board[row][size - 1 - col] = board[row][col];
-        }
-    }
-
-    // 2. Mirror top-to-bottom (horizontal axis)
-    for (int row = 0; row <= center; row++)
-    {
-        for (int col = 0; col < size; col++)
-        {
-            board[size - 1 - row][col] = board[row][col];
         }
     }
 

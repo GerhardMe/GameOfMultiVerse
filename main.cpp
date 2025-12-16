@@ -26,15 +26,28 @@ void testBoard(const vector<vector<int>> &original, const string &name)
     cout << "Original:" << endl;
     printBoard(original);
 
-    uint64_t id = boardToId(original);
+    BoardID id = boardToId(original);
     int numBits = ((original.size() / 2) + 1) * ((original.size() / 2) + 2) / 2;
-    cout << "\nID: " << id;
-    cout << " (binary: ";
-    for (int i = numBits - 1; i >= 0; i--)
+
+    cout << "\nID (" << id.size() << " bytes, " << numBits << " bits): ";
+
+    // Print as hex
+    for (size_t i = 0; i < id.size(); i++)
     {
-        cout << ((id >> i) & 1);
+        printf("%02x", id[i]);
     }
-    cout << ")" << endl;
+    cout << endl;
+
+    // Print as binary (first byte only for readability)
+    cout << "Binary (first byte): ";
+    if (!id.empty())
+    {
+        for (int i = 7; i >= 0; i--)
+        {
+            cout << ((id[0] >> i) & 1);
+        }
+    }
+    cout << endl;
 
     vector<vector<int>> restored = idToBoard(id, original.size());
     cout << "\nRestored:" << endl;
@@ -86,7 +99,7 @@ void testRulesets()
 int main()
 {
     // Test boards
-    vector<vector<int>> board1 = {{0}};
+    vector<vector<int>> board1 = {{1}};
     testBoard(board1, "Test 1: 1x1");
 
     vector<vector<int>> board2 = {

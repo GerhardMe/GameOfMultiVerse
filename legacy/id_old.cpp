@@ -2,8 +2,91 @@
 #include <vector>
 #include <cstdint>
 #include <bitset>
+#include <stdexcept>
 
 using namespace std;
+
+// ============================================================================
+// RULESET STRUCTURE
+// ============================================================================
+
+struct Ruleset
+{
+    int underpopEnd; // [0, underpopEnd] -> death
+    int birthStart;  // [birthStart, birthEnd] -> birth/survival
+    int birthEnd;
+    int overpopStart; // [overpopStart, 8] -> death
+
+    bool operator==(const Ruleset &other) const
+    {
+        return underpopEnd == other.underpopEnd &&
+               birthStart == other.birthStart &&
+               birthEnd == other.birthEnd &&
+               overpopStart == other.overpopStart;
+    }
+};
+
+// ============================================================================
+// RULESET ID CONVERSION
+// ============================================================================
+
+// Generate all valid rulesets in canonical order
+vector<Ruleset> generateAllRulesets()
+{
+    vector<Ruleset> rulesets;
+
+    for (int a = 0; a <= 7; a++)
+    {
+        for (int b = a + 1; b <= 8; b++)
+        {
+            for (int c = b; c <= 8; c++)
+            {
+                for (int d = c + 1; d <= 9; d++)
+                {
+                    rulesets.push_back({a, b, c, d});
+                }
+            }
+        }
+    }
+
+    return rulesets;
+}
+
+// Convert ruleset to ID (its index in canonical ordering)
+int rulesetToId(const Ruleset &ruleset)
+{
+    static vector<Ruleset> allRulesets = generateAllRulesets();
+
+    for (size_t i = 0; i < allRulesets.size(); i++)
+    {
+        if (allRulesets[i] == ruleset)
+        {
+            return i;
+        }
+    }
+
+    throw runtime_error("Invalid ruleset");
+}
+
+// Convert ID to ruleset
+Ruleset idToRuleset(int id)
+{
+    static vector<Ruleset> allRulesets = generateAllRulesets();
+
+    if (id < 0 || id >= (int)allRulesets.size())
+    {
+        throw runtime_error("Invalid ruleset ID");
+    }
+
+    return allRulesets[id];
+}
+
+// Get total number of valid rulesets
+int getTotalRulesets()
+{
+    static vector<Ruleset> allRulesets = generateAllRulesets();
+    return allRulesets.size();
+}
 
 // ============================================================================
 // BOARD ID CONVERSION
@@ -133,20 +216,59 @@ void testBoard(const vector<vector<int>> &original, const string &name)
     cout << endl;
 }
 
+void testRulesets()
+{
+    cout << "=== Ruleset ID System ===" << endl;
+
+    int total = getTotalRulesets();
+    cout << "Total valid rulesets: " << total << endl
+         << endl;
+
+    // Test a few specific rulesets
+    Ruleset conway = {1, 3, 3, 4}; // Conway's Game of Life
+    int conwayId = rulesetToId(conway);
+    Ruleset restoredConway = idToRuleset(conwayId);
+
+    cout << "Conway's Game of Life:" << endl;
+    cout << "  Ruleset: {" << conway.underpopEnd << ", " << conway.birthStart
+         << ", " << conway.birthEnd << ", " << conway.overpopStart << "}" << endl;
+    cout << "  ID: " << conwayId << endl;
+    cout << "  Restored: {" << restoredConway.underpopEnd << ", " << restoredConway.birthStart
+         << ", " << restoredConway.birthEnd << ", " << restoredConway.overpopStart << "}" << endl;
+    cout << "  Match: " << (conway == restoredConway ? "YES" : "NO") << endl
+         << endl;
+
+    // Show first and last few rulesets
+    cout << "First 5 rulesets:" << endl;
+    for (int i = 0; i < 5; i++)
+    {
+        Ruleset r = idToRuleset(i);
+        cout << "  ID " << i << ": {" << r.underpopEnd << ", " << r.birthStart
+             << ", " << r.birthEnd << ", " << r.overpopStart << "}" << endl;
+    }
+
+    cout << "\nLast 5 rulesets:" << endl;
+    for (int i = total - 5; i < total; i++)
+    {
+        Ruleset r = idToRuleset(i);
+        cout << "  ID " << i << ": {" << r.underpopEnd << ", " << r.birthStart
+             << ", " << r.birthEnd << ", " << r.overpopStart << "}" << endl;
+    }
+    cout << endl;
+}
+
 int main()
 {
-    // Test 1: 1x1
+    // Test boards
     vector<vector<int>> board1 = {{1}};
     testBoard(board1, "Test 1: 1x1");
 
-    // Test 2: 3x3
     vector<vector<int>> board2 = {
         {0, 1, 0},
         {1, 0, 1},
         {0, 1, 0}};
     testBoard(board2, "Test 2: 3x3");
 
-    // Test 3: 5x5
     vector<vector<int>> board3 = {
         {0, 0, 1, 0, 0},
         {0, 0, 1, 0, 0},
@@ -155,7 +277,6 @@ int main()
         {0, 0, 1, 0, 0}};
     testBoard(board3, "Test 3: 5x5");
 
-    // Test 4: 7x7
     vector<vector<int>> board4 = {
         {0, 0, 0, 1, 0, 0, 0},
         {0, 0, 0, 1, 0, 0, 0},
@@ -165,6 +286,9 @@ int main()
         {0, 0, 0, 1, 0, 0, 0},
         {0, 0, 0, 1, 0, 0, 0}};
     testBoard(board4, "Test 4: 7x7");
+
+    // Test rulesets
+    testRulesets();
 
     return 0;
 }

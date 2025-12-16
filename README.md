@@ -114,7 +114,7 @@ A logical board of size `N × N` contains:
 ```
 N² cells (bits)
 ```
-For a board of size `N = 2k + 1`, the number of stored bits is:
+For a board of size `N = 2k + 1`, the number of bits making upp its ID is:
 
 ```
 bits = (k + 1)(k + 2) / 2

@@ -1,10 +1,10 @@
 #include <iostream>
-#include <bitset>
-#include <cstdint>
 #include <vector>
-#include <string>
 #include "board_id.h"
 #include "ruleset_id.h"
+#include "evolution.h"
+#include "database.h"
+#include "expand.h"
 
 using namespace std;
 
@@ -14,123 +14,159 @@ void printBoard(const vector<vector<int>> &board)
     {
         for (int cell : row)
         {
-            cout << cell;
+            cout << (cell ? "#" : ".");
         }
         cout << endl;
     }
 }
 
-void testBoard(const vector<vector<int>> &original, const string &name)
+void printBoardId(const BoardID &id)
 {
-    cout << "=== " << name << " ===" << endl;
-    cout << "Original:" << endl;
-    printBoard(original);
-
-    BoardID id = boardToId(original);
-    int numBits = ((original.size() / 2) + 1) * ((original.size() / 2) + 2) / 2;
-
-    cout << "\nID (" << id.size() << " bytes, " << numBits << " bits): ";
-
-    // Print as hex
     for (size_t i = 0; i < id.size(); i++)
     {
         printf("%02x", id[i]);
     }
-    cout << endl;
-
-    // Print as binary (first byte only for readability)
-    cout << "Binary (first byte): ";
-    if (!id.empty())
-    {
-        for (int i = 7; i >= 0; i--)
-        {
-            cout << ((id[0] >> i) & 1);
-        }
-    }
-    cout << endl;
-
-    vector<vector<int>> restored = idToBoard(id, original.size());
-    cout << "\nRestored:" << endl;
-    printBoard(restored);
-    cout << endl;
-}
-
-void testRulesets()
-{
-    cout << "=== Ruleset ID System ===" << endl;
-
-    int total = getTotalRulesets();
-    cout << "Total valid rulesets: " << total << endl
-         << endl;
-
-    // Test Conway's Game of Life
-    Ruleset conway = {1, 3, 3, 4};
-    int conwayId = rulesetToId(conway);
-    Ruleset restoredConway = idToRuleset(conwayId);
-
-    cout << "Conway's Game of Life:" << endl;
-    cout << "  Ruleset: {" << conway.underpopEnd << ", " << conway.birthStart
-         << ", " << conway.birthEnd << ", " << conway.overpopStart << "}" << endl;
-    cout << "  ID: " << conwayId << endl;
-    cout << "  Restored: {" << restoredConway.underpopEnd << ", " << restoredConway.birthStart
-         << ", " << restoredConway.birthEnd << ", " << restoredConway.overpopStart << "}" << endl;
-    cout << "  Match: " << (conway == restoredConway ? "YES" : "NO") << endl
-         << endl;
-
-    // Show first and last few rulesets
-    cout << "First 5 rulesets:" << endl;
-    for (int i = 0; i < 5; i++)
-    {
-        Ruleset r = idToRuleset(i);
-        cout << "  ID " << i << ": {" << r.underpopEnd << ", " << r.birthStart
-             << ", " << r.birthEnd << ", " << r.overpopStart << "}" << endl;
-    }
-
-    cout << "\nLast 5 rulesets:" << endl;
-    for (int i = total - 5; i < total; i++)
-    {
-        Ruleset r = idToRuleset(i);
-        cout << "  ID " << i << ": {" << r.underpopEnd << ", " << r.birthStart
-             << ", " << r.birthEnd << ", " << r.overpopStart << "}" << endl;
-    }
-    cout << endl;
 }
 
 int main()
 {
-    // Initialize ruleset system once at startup
+    // Initialize ruleset system
     initRulesets();
+    cout << "Initialized " << getTotalRulesets() << " rulesets" << endl;
 
-    // Test boards
-    vector<vector<int>> board1 = {{1}};
-    testBoard(board1, "Test 1: 1x1");
+    // Create database
+    Database db("multiverse.db");
+    if (!db.init())
+    {
+        cerr << "Failed to initialize database" << endl;
+        return 1;
+    }
+    cout << "Database initialized" << endl;
 
-    vector<vector<int>> board2 = {
-        {0, 1, 0},
-        {1, 0, 1},
-        {0, 1, 0}};
-    testBoard(board2, "Test 2: 3x3");
+    // Create seed board: the 1x1 board with single live cell
+    vector<vector<int>> seedBoard = {{1}};
+    BoardID seedId = boardToId(seedBoard);
 
-    vector<vector<int>> board3 = {
-        {0, 0, 1, 0, 0},
-        {0, 0, 1, 0, 0},
-        {1, 1, 0, 1, 1},
-        {0, 0, 1, 0, 0},
-        {0, 0, 1, 0, 0}};
-    testBoard(board3, "Test 3: 5x5");
+    cout << "\n=== Seed Board ===" << endl;
+    printBoard(seedBoard);
+    cout << "ID: ";
+    printBoardId(seedId);
+    cout << endl;
 
-    vector<vector<int>> board4 = {
-        {0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0},
-        {1, 1, 1, 0, 1, 1, 1},
-        {0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0},
-        {0, 0, 0, 1, 0, 0, 0}};
-    testBoard(board4, "Test 4: 7x7");
+    // Insert seed if not exists
+    if (!db.boardExists(seedId))
+    {
+        db.insertBoard(seedId, true); // true = this is a "true parent" (root)
+        cout << "Inserted seed board" << endl;
+    }
+    else
+    {
+        cout << "Seed board already exists" << endl;
+    }
 
-    // Test rulesets
-    testRulesets();
+    // Show initial stats
+    cout << "\n=== Initial Stats ===" << endl;
+    cout << "Total boards: " << db.getTotalBoards() << endl;
+    cout << "Unexpanded: " << db.getUnexpandedCount() << endl;
+
+    // Expand a few generations
+    int maxGenerations = 3;
+    for (int gen = 0; gen < maxGenerations; gen++)
+    {
+        cout << "\n=== Generation " << gen << " ===" << endl;
+
+        auto unexpanded = db.getUnexpandedBoards();
+        cout << "Boards to expand: " << unexpanded.size() << endl;
+
+        if (unexpanded.empty())
+        {
+            cout << "No more boards to expand" << endl;
+            break;
+        }
+
+        int expanded = 0;
+        for (const auto &boardId : unexpanded)
+        {
+            if (expandNode(db, boardId))
+            {
+                expanded++;
+            }
+        }
+
+        cout << "Expanded " << expanded << " boards" << endl;
+        cout << "Total boards now: " << db.getTotalBoards() << endl;
+        cout << "Unexpanded now: " << db.getUnexpandedCount() << endl;
+    }
+
+    // Show some results
+    cout << "\n=== Final Stats ===" << endl;
+    cout << "Total boards: " << db.getTotalBoards() << endl;
+    cout << "Unexpanded: " << db.getUnexpandedCount() << endl;
+
+    // Show children of seed board
+    cout << "\n=== Children of Seed Board ===" << endl;
+    auto children = db.getAllEvolutions(seedId);
+    if (children)
+    {
+        // Count unique children
+        vector<BoardID> unique;
+        for (const auto &child : *children)
+        {
+            bool found = false;
+            for (const auto &u : unique)
+            {
+                if (u == child)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                unique.push_back(child);
+            }
+        }
+
+        cout << "Total children: " << children->size() << endl;
+        cout << "Unique children: " << unique.size() << endl;
+
+        cout << "\nFirst 5 unique children:" << endl;
+        for (int i = 0; i < min(5, (int)unique.size()); i++)
+        {
+            cout << "  Child " << i << ": ";
+            printBoardId(unique[i]);
+
+            // Check if it's the zero board
+            if (unique[i].size() == 1 && unique[i][0] == 0)
+            {
+                cout << " (zero board)";
+            }
+            else
+            {
+                // Derive size and show board
+                int bytes = unique[i].size();
+                int boardSize = -1;
+                for (int k = 0; k < 20; k++)
+                {
+                    int bits = (k + 1) * (k + 2) / 2;
+                    if ((bits + 7) / 8 == bytes)
+                    {
+                        boardSize = 2 * k + 1;
+                        break;
+                    }
+                }
+                if (boardSize > 0)
+                {
+                    cout << " (" << boardSize << "x" << boardSize << ")";
+                }
+            }
+            cout << endl;
+        }
+    }
+    else
+    {
+        cout << "Seed board not expanded yet" << endl;
+    }
 
     return 0;
 }

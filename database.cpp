@@ -542,3 +542,24 @@ int Database::getUnexpandedCount()
     sqlite3_finalize(stmt);
     return count;
 }
+
+std::vector<BoardID> Database::getUnexpandedBoards()
+{
+    std::vector<BoardID> boards;
+    const char *sql = "SELECT board_id FROM boards WHERE expanded = 0";
+    sqlite3_stmt *stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return boards;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const void *data = sqlite3_column_blob(stmt, 0);
+        int size = sqlite3_column_bytes(stmt, 0);
+        boards.emplace_back(static_cast<const uint8_t *>(data),
+                            static_cast<const uint8_t *>(data) + size);
+    }
+
+    sqlite3_finalize(stmt);
+    return boards;
+}

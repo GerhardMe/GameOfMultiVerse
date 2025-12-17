@@ -1,6 +1,11 @@
 #include "ruleset_id.h"
 #include <stdexcept>
 
+// Global cached data - initialized once at startup
+static std::vector<Ruleset> g_allRulesets;
+static int g_totalRulesets = 0;
+static bool g_initialized = false;
+
 bool Ruleset::operator==(const Ruleset &other) const
 {
     return underpopEnd == other.underpopEnd &&
@@ -9,10 +14,12 @@ bool Ruleset::operator==(const Ruleset &other) const
            overpopStart == other.overpopStart;
 }
 
-std::vector<Ruleset> generateAllRulesets()
+void initRulesets()
 {
-    std::vector<Ruleset> rulesets;
+    if (g_initialized)
+        return;
 
+    // Generate all valid rulesets once
     for (int a = 0; a <= 7; a++)
     {
         for (int b = a + 1; b <= 8; b++)
@@ -21,22 +28,26 @@ std::vector<Ruleset> generateAllRulesets()
             {
                 for (int d = c + 1; d <= 9; d++)
                 {
-                    rulesets.push_back({a, b, c, d});
+                    g_allRulesets.push_back({a, b, c, d});
                 }
             }
         }
     }
 
-    return rulesets;
+    g_totalRulesets = static_cast<int>(g_allRulesets.size());
+    g_initialized = true;
 }
 
 int rulesetToId(const Ruleset &ruleset)
 {
-    static std::vector<Ruleset> allRulesets = generateAllRulesets();
-
-    for (size_t i = 0; i < allRulesets.size(); i++)
+    if (!g_initialized)
     {
-        if (allRulesets[i] == ruleset)
+        throw std::runtime_error("Rulesets not initialized - call initRulesets() first");
+    }
+
+    for (int i = 0; i < g_totalRulesets; i++)
+    {
+        if (g_allRulesets[i] == ruleset)
         {
             return i;
         }
@@ -47,18 +58,25 @@ int rulesetToId(const Ruleset &ruleset)
 
 Ruleset idToRuleset(int id)
 {
-    static std::vector<Ruleset> allRulesets = generateAllRulesets();
+    if (!g_initialized)
+    {
+        throw std::runtime_error("Rulesets not initialized - call initRulesets() first");
+    }
 
-    if (id < 0 || id >= (int)allRulesets.size())
+    if (id < 0 || id >= g_totalRulesets)
     {
         throw std::runtime_error("Invalid ruleset ID");
     }
 
-    return allRulesets[id];
+    return g_allRulesets[id];
 }
 
 int getTotalRulesets()
 {
-    static std::vector<Ruleset> allRulesets = generateAllRulesets();
-    return allRulesets.size();
+    if (!g_initialized)
+    {
+        throw std::runtime_error("Rulesets not initialized - call initRulesets() first");
+    }
+
+    return g_totalRulesets;
 }

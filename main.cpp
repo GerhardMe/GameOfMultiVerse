@@ -98,6 +98,9 @@ void testRulesets()
 
 int main()
 {
+    // Initialize ruleset system once at startup
+    initRulesets();
+
     // Test boards
     vector<vector<int>> board1 = {{1}};
     testBoard(board1, "Test 1: 1x1");

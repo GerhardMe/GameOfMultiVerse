@@ -1,409 +1,506 @@
 #include "database.h"
+#include "ruleset_id.h"
 #include <iostream>
-#include <cstring>
+#include <algorithm>
+#include <cmath>
 
 Database::Database(const std::string &path) : db(nullptr), dbPath(path) {}
 
 Database::~Database()
 {
     if (db)
-    {
         sqlite3_close(db);
-    }
 }
 
 bool Database::init()
 {
-    // Open database
-    int rc = sqlite3_open(dbPath.c_str(), &db);
-    if (rc != SQLITE_OK)
+    if (sqlite3_open(dbPath.c_str(), &db) != SQLITE_OK)
     {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << std::endl;
         return false;
     }
 
-    // Create table
     const char *sql = R"(
         CREATE TABLE IF NOT EXISTS boards (
             board_id BLOB PRIMARY KEY,
-            generation INTEGER NOT NULL,
-            size INTEGER NOT NULL,
-            children MEDIUMBLOB
+            expanded BOOLEAN DEFAULT 0,
+            true_parent BOOLEAN DEFAULT 0,
+            parent_size INTEGER DEFAULT 0,
+            parents BLOB,
+            children BLOB
         );
-        
-        CREATE INDEX IF NOT EXISTS idx_generation ON boards(generation);
-        CREATE INDEX IF NOT EXISTS idx_size ON boards(size);
     )";
 
     char *errMsg = nullptr;
-    rc = sqlite3_exec(db, sql, nullptr, nullptr, &errMsg);
-
-    if (rc != SQLITE_OK)
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &errMsg) != SQLITE_OK)
     {
         std::cerr << "SQL error: " << errMsg << std::endl;
         sqlite3_free(errMsg);
         return false;
     }
-
     return true;
 }
 
-std::vector<uint8_t> Database::packChildren(const ChildrenData &data)
+int Database::getBoardSizeFromId(const BoardID &id)
 {
-    std::vector<uint8_t> blob;
+    // BoardID has (k+1)(k+2)/2 bits for board size N = 2k+1
+    // Bytes = ceil(bits/8)
+    // Given bytes, find k, then N = 2k+1
+    int bytes = id.size();
+    int bits = bytes * 8; // Upper bound
 
-    // First byte: metadata flags
-    uint8_t metadata = 0;
-    if (data.expanded)
-        metadata |= 0x01;
-    if (data.fromShrink)
-        metadata |= 0x02;
-    blob.push_back(metadata);
+    // Find k where (k+1)(k+2)/2 <= bits*8 and fits in 'bytes' bytes
+    // Solve: (k+1)(k+2)/2 = bits => k^2 + 3k + 2 = 2*bits
+    // k = (-3 + sqrt(9 + 8*bits - 8)) / 2 = (-3 + sqrt(1 + 8*bits)) / 2
 
-    if (!data.expanded || data.evolutions.empty())
+    // We need to find k such that ceil((k+1)(k+2)/2 / 8) = bytes
+    for (int k = 0; k < 100; k++)
     {
-        return blob;
+        int numBits = (k + 1) * (k + 2) / 2;
+        int numBytes = (numBits + 7) / 8;
+        if (numBytes == bytes)
+        {
+            return 2 * k + 1; // N = 2k+1
+        }
     }
-
-    // Calculate child ID size from first evolution (all should be same size)
-    int childIdBytes = data.evolutions[0].size();
-
-    // Pack all 330 evolution IDs (all same size, no length prefix needed)
-    for (const auto &evo : data.evolutions)
-    {
-        blob.insert(blob.end(), evo.begin(), evo.end());
-    }
-
-    return blob;
+    return -1; // Invalid
 }
 
-ChildrenData Database::unpackChildren(const std::vector<uint8_t> &blob)
+int Database::getChildIdBytes(const BoardID &parentId)
 {
-    ChildrenData data;
-    data.evolutions.resize(330);
-
-    if (blob.empty())
-    {
-        data.expanded = false;
-        data.fromShrink = false;
-        return data;
-    }
-
-    // Read metadata byte
-    uint8_t metadata = blob[0];
-    data.expanded = (metadata & 0x01) != 0;
-    data.fromShrink = (metadata & 0x02) != 0;
-
-    if (!data.expanded || blob.size() <= 1)
-    {
-        return data;
-    }
-
-    // Calculate child ID size
-    // Total data bytes = blob.size() - 1 (metadata byte)
-    // childIdBytes = (blob.size() - 1) / 330
-    int totalDataBytes = blob.size() - 1;
-    int childIdBytes = totalDataBytes / 330;
-
-    // Read 330 evolution IDs (all same size)
-    size_t offset = 1;
-    for (int i = 0; i < 330 && offset + childIdBytes <= blob.size(); i++)
-    {
-        data.evolutions[i].assign(blob.begin() + offset, blob.begin() + offset + childIdBytes);
-        offset += childIdBytes;
-    }
-
-    return data;
+    // Parent: N = 2k+1, Child: N' = 2(k+1)+1 = 2k+3
+    // Child bits = (k+2)(k+3)/2
+    int parentSize = getBoardSizeFromId(parentId);
+    int k = (parentSize - 1) / 2;
+    int childBits = (k + 2) * (k + 3) / 2;
+    return (childBits + 7) / 8;
 }
 
-bool Database::insertBoard(const BoardID &boardId, int generation, int size, bool fromShrink)
+int Database::getParentIdBytes(const BoardID &childId)
 {
-    const char *sql = "INSERT OR IGNORE INTO boards (board_id, generation, size, children) VALUES (?, ?, ?, ?)";
+    // Child: N = 2k+1, Parent: N' = 2(k-1)+1 = 2k-1
+    // Parent bits = k(k+1)/2
+    int childSize = getBoardSizeFromId(childId);
+    int k = (childSize - 1) / 2;
+    if (k <= 0)
+        return 0; // No valid parent (1x1 board)
+    int parentBits = k * (k + 1) / 2;
+    return (parentBits + 7) / 8;
+}
 
+bool Database::insertBoard(const BoardID &boardId, bool trueParent)
+{
+    const char *sql = "INSERT OR IGNORE INTO boards (board_id, expanded, true_parent, parent_size) VALUES (?, 0, ?, 0)";
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
-    if (rc != SQLITE_OK)
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     {
         std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db) << std::endl;
         return false;
     }
 
-    // Bind board_id
     sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, trueParent ? 1 : 0);
 
-    // Bind generation and size
-    sqlite3_bind_int(stmt, 2, generation);
-    sqlite3_bind_int(stmt, 3, size);
-
-    // Bind children (just metadata byte, unexpanded)
-    uint8_t metadata = fromShrink ? 0x02 : 0x00;
-    sqlite3_bind_blob(stmt, 4, &metadata, 1, SQLITE_TRANSIENT);
-
-    rc = sqlite3_step(stmt);
+    bool success = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
-
-    return rc == SQLITE_DONE;
+    return success;
 }
 
 bool Database::boardExists(const BoardID &boardId)
 {
     const char *sql = "SELECT 1 FROM boards WHERE board_id = ? LIMIT 1";
-
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
-    if (rc != SQLITE_OK)
-    {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;
-    }
 
     sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
-
-    rc = sqlite3_step(stmt);
+    bool exists = (sqlite3_step(stmt) == SQLITE_ROW);
     sqlite3_finalize(stmt);
-
-    return rc == SQLITE_ROW;
-}
-
-std::optional<std::pair<int, int>> Database::getBoardInfo(const BoardID &boardId)
-{
-    const char *sql = "SELECT generation, size FROM boards WHERE board_id = ?";
-
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-
-    if (rc != SQLITE_OK)
-    {
-        return std::nullopt;
-    }
-
-    sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-    {
-        int generation = sqlite3_column_int(stmt, 0);
-        int size = sqlite3_column_int(stmt, 1);
-        sqlite3_finalize(stmt);
-        return std::make_pair(generation, size);
-    }
-
-    sqlite3_finalize(stmt);
-    return std::nullopt;
+    return exists;
 }
 
 bool Database::isExpanded(const BoardID &boardId)
 {
-    const char *sql = "SELECT children FROM boards WHERE board_id = ?";
-
+    const char *sql = "SELECT expanded FROM boards WHERE board_id = ?";
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
-    if (rc != SQLITE_OK)
-    {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;
-    }
 
     sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
 
+    bool expanded = false;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        const void *data = sqlite3_column_blob(stmt, 0);
-        int size = sqlite3_column_bytes(stmt, 0);
-
-        if (size > 0)
-        {
-            uint8_t metadata = *static_cast<const uint8_t *>(data);
-            sqlite3_finalize(stmt);
-            return (metadata & 0x01) != 0;
-        }
+        expanded = (sqlite3_column_int(stmt, 0) != 0);
     }
 
     sqlite3_finalize(stmt);
-    return false;
+    return expanded;
+}
+
+bool Database::isTrueParent(const BoardID &boardId)
+{
+    const char *sql = "SELECT true_parent FROM boards WHERE board_id = ?";
+    sqlite3_stmt *stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
+
+    bool trueParent = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        trueParent = (sqlite3_column_int(stmt, 0) != 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return trueParent;
 }
 
 std::optional<BoardID> Database::getEvolution(const BoardID &boardId, int rulesetId)
 {
-    if (rulesetId < 0 || rulesetId >= 330)
-    {
+    int numRulesets = getTotalRulesets();
+    if (rulesetId < 0 || rulesetId >= numRulesets)
         return std::nullopt;
-    }
 
-    const char *sql = "SELECT children FROM boards WHERE board_id = ?";
-
+    const char *sql = "SELECT expanded, children FROM boards WHERE board_id = ?";
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
-    if (rc != SQLITE_OK)
-    {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return std::nullopt;
-    }
 
     sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
 
+    std::optional<BoardID> result;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        const void *data = sqlite3_column_blob(stmt, 0);
-        int size = sqlite3_column_bytes(stmt, 0);
-
-        std::vector<uint8_t> blob(static_cast<const uint8_t *>(data),
-                                  static_cast<const uint8_t *>(data) + size);
-
-        ChildrenData children = unpackChildren(blob);
-        sqlite3_finalize(stmt);
-
-        if (children.expanded && rulesetId < children.evolutions.size())
+        bool expanded = (sqlite3_column_int(stmt, 0) != 0);
+        if (expanded)
         {
-            return children.evolutions[rulesetId];
+            const void *data = sqlite3_column_blob(stmt, 1);
+            int blobSize = sqlite3_column_bytes(stmt, 1);
+
+            int childBytes = getChildIdBytes(boardId);
+            int expectedSize = numRulesets * childBytes;
+
+            if (blobSize == expectedSize)
+            {
+                const uint8_t *blobData = static_cast<const uint8_t *>(data);
+                int offset = rulesetId * childBytes;
+                result = BoardID(blobData + offset, blobData + offset + childBytes);
+            }
         }
     }
-    else
-    {
-        sqlite3_finalize(stmt);
-    }
 
-    return std::nullopt;
+    sqlite3_finalize(stmt);
+    return result;
 }
 
 std::optional<std::vector<BoardID>> Database::getAllEvolutions(const BoardID &boardId)
 {
-    const char *sql = "SELECT children FROM boards WHERE board_id = ?";
-
+    const char *sql = "SELECT expanded, children FROM boards WHERE board_id = ?";
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
 
-    if (rc != SQLITE_OK)
-    {
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return std::nullopt;
+
+    sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
+
+    std::optional<std::vector<BoardID>> result;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        bool expanded = (sqlite3_column_int(stmt, 0) != 0);
+        if (expanded)
+        {
+            const void *data = sqlite3_column_blob(stmt, 1);
+            int blobSize = sqlite3_column_bytes(stmt, 1);
+
+            int numRulesets = getTotalRulesets();
+            int childBytes = getChildIdBytes(boardId);
+            int expectedSize = numRulesets * childBytes;
+
+            if (blobSize == expectedSize)
+            {
+                const uint8_t *blobData = static_cast<const uint8_t *>(data);
+                std::vector<BoardID> evolutions;
+                evolutions.reserve(numRulesets);
+
+                for (int i = 0; i < numRulesets; i++)
+                {
+                    int offset = i * childBytes;
+                    evolutions.emplace_back(blobData + offset, blobData + offset + childBytes);
+                }
+                result = std::move(evolutions);
+            }
+        }
     }
+
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool Database::setEvolutions(const BoardID &boardId, const std::vector<BoardID> &evolutions)
+{
+    int numRulesets = getTotalRulesets();
+
+    if (evolutions.size() != numRulesets)
+    {
+        std::cerr << "Must provide exactly " << numRulesets << " evolutions" << std::endl;
+        return false;
+    }
+
+    int childBytes = getChildIdBytes(boardId);
+
+    // Pack children into blob
+    std::vector<uint8_t> blob;
+    blob.reserve(numRulesets * childBytes);
+
+    for (const auto &evo : evolutions)
+    {
+        if (evo.size() != childBytes)
+        {
+            std::cerr << "Child ID size mismatch: expected " << childBytes
+                      << ", got " << evo.size() << std::endl;
+            return false;
+        }
+        blob.insert(blob.end(), evo.begin(), evo.end());
+    }
+
+    // Update database
+    const char *sql = "UPDATE boards SET expanded = 1, children = ? WHERE board_id = ?";
+    sqlite3_stmt *stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db) << std::endl;
+        return false;
+    }
+
+    sqlite3_bind_blob(stmt, 1, blob.data(), blob.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 2, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
+
+    bool success = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    return success;
+}
+
+bool Database::addParent(const BoardID &childId, const BoardID &parentId)
+{
+    int numRulesets = getTotalRulesets();
+    int newParentSize = parentId.size();
+
+    // Get current parent data
+    const char *selectSql = "SELECT parent_size, parents FROM boards WHERE board_id = ?";
+    sqlite3_stmt *selectStmt;
+
+    if (sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_blob(selectStmt, 1, childId.data(), childId.size(), SQLITE_TRANSIENT);
+
+    int currentParentSize = 0;
+    std::vector<BoardID> currentParents;
+
+    if (sqlite3_step(selectStmt) == SQLITE_ROW)
+    {
+        currentParentSize = sqlite3_column_int(selectStmt, 0);
+
+        const void *data = sqlite3_column_blob(selectStmt, 1);
+        int blobSize = sqlite3_column_bytes(selectStmt, 1);
+
+        if (currentParentSize > 0 && blobSize > 0)
+        {
+            const uint8_t *blobData = static_cast<const uint8_t *>(data);
+            int parentCount = blobSize / currentParentSize;
+
+            for (int i = 0; i < parentCount; i++)
+            {
+                int offset = i * currentParentSize;
+                // Store actual size, not padded size
+                BoardID parent(blobData + offset, blobData + offset + currentParentSize);
+                // Trim trailing zeros to get actual ID
+                while (!parent.empty() && parent.back() == 0)
+                {
+                    parent.pop_back();
+                }
+                if (!parent.empty())
+                {
+                    currentParents.push_back(parent);
+                }
+            }
+        }
+    }
+    else
+    {
+        sqlite3_finalize(selectStmt);
+        return false; // Board not found
+    }
+    sqlite3_finalize(selectStmt);
+
+    // Check for duplicate
+    for (const auto &p : currentParents)
+    {
+        if (p == parentId)
+            return true; // Already exists, success
+    }
+
+    int currentCount = currentParents.size();
+
+    // Determine action based on current state
+    int newMaxSize = currentParentSize;
+    bool shouldAdd = false;
+    int evictIndex = -1;
+
+    if (currentCount < numRulesets)
+    {
+        // Room available
+        shouldAdd = true;
+        if (newParentSize > currentParentSize)
+        {
+            newMaxSize = newParentSize;
+        }
+    }
+    else
+    {
+        // Full - check if we should evict
+        // Parents are sorted largest-first, so first one is largest
+        if (!currentParents.empty() && newParentSize < currentParents[0].size())
+        {
+            shouldAdd = true;
+            evictIndex = 0; // Evict the largest
+        }
+    }
+
+    if (!shouldAdd)
+        return true; // Can't add, but not an error
+
+    // Build new parent list
+    std::vector<BoardID> newParents;
+    if (evictIndex >= 0)
+    {
+        // Copy all except evicted
+        for (int i = 0; i < currentParents.size(); i++)
+        {
+            if (i != evictIndex)
+            {
+                newParents.push_back(currentParents[i]);
+            }
+        }
+    }
+    else
+    {
+        newParents = currentParents;
+    }
+    newParents.push_back(parentId);
+
+    // Sort by size descending (largest first)
+    std::sort(newParents.begin(), newParents.end(),
+              [](const BoardID &a, const BoardID &b)
+              {
+                  return a.size() > b.size();
+              });
+
+    // Determine new max size (largest in list)
+    newMaxSize = newParents.empty() ? 0 : newParents[0].size();
+
+    // Pack into blob with padding
+    std::vector<uint8_t> blob;
+    blob.reserve(newParents.size() * newMaxSize);
+
+    for (const auto &p : newParents)
+    {
+        // Add parent with padding to newMaxSize
+        blob.insert(blob.end(), p.begin(), p.end());
+        // Pad with zeros
+        for (int i = p.size(); i < newMaxSize; i++)
+        {
+            blob.push_back(0);
+        }
+    }
+
+    // Update database
+    const char *updateSql = "UPDATE boards SET parent_size = ?, parents = ? WHERE board_id = ?";
+    sqlite3_stmt *updateStmt;
+
+    if (sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_int(updateStmt, 1, newMaxSize);
+    sqlite3_bind_blob(updateStmt, 2, blob.data(), blob.size(), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(updateStmt, 3, childId.data(), childId.size(), SQLITE_TRANSIENT);
+
+    bool success = (sqlite3_step(updateStmt) == SQLITE_DONE);
+    sqlite3_finalize(updateStmt);
+    return success;
+}
+
+std::vector<BoardID> Database::getParents(const BoardID &boardId)
+{
+    std::vector<BoardID> parents;
+
+    const char *sql = "SELECT parent_size, parents FROM boards WHERE board_id = ?";
+    sqlite3_stmt *stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return parents;
 
     sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        const void *data = sqlite3_column_blob(stmt, 0);
-        int size = sqlite3_column_bytes(stmt, 0);
+        int parentSize = sqlite3_column_int(stmt, 0);
+        const void *data = sqlite3_column_blob(stmt, 1);
+        int blobSize = sqlite3_column_bytes(stmt, 1);
 
-        std::vector<uint8_t> blob(static_cast<const uint8_t *>(data),
-                                  static_cast<const uint8_t *>(data) + size);
-
-        ChildrenData children = unpackChildren(blob);
-        sqlite3_finalize(stmt);
-
-        if (children.expanded)
+        if (parentSize > 0 && blobSize > 0)
         {
-            return children.evolutions;
-        }
-    }
-    else
-    {
-        sqlite3_finalize(stmt);
-    }
+            const uint8_t *blobData = static_cast<const uint8_t *>(data);
+            int parentCount = blobSize / parentSize;
 
-    return std::nullopt;
-}
-
-bool Database::setEvolutions(const BoardID &boardId, const std::vector<BoardID> &evolutions)
-{
-    if (evolutions.size() != 330)
-    {
-        std::cerr << "Must provide exactly 330 evolutions" << std::endl;
-        return false;
-    }
-
-    // Get existing shrink flag
-    const char *selectSql = "SELECT children FROM boards WHERE board_id = ?";
-    sqlite3_stmt *selectStmt;
-    bool fromShrink = false;
-
-    if (sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nullptr) == SQLITE_OK)
-    {
-        sqlite3_bind_blob(selectStmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
-
-        if (sqlite3_step(selectStmt) == SQLITE_ROW)
-        {
-            const void *data = sqlite3_column_blob(selectStmt, 0);
-            int size = sqlite3_column_bytes(selectStmt, 0);
-
-            if (size > 0)
+            for (int i = 0; i < parentCount; i++)
             {
-                uint8_t metadata = *static_cast<const uint8_t *>(data);
-                fromShrink = (metadata & 0x02) != 0;
+                int offset = i * parentSize;
+                BoardID parent(blobData + offset, blobData + offset + parentSize);
+                // Trim trailing zeros
+                while (!parent.empty() && parent.back() == 0)
+                {
+                    parent.pop_back();
+                }
+                if (!parent.empty())
+                {
+                    parents.push_back(parent);
+                }
             }
         }
-        sqlite3_finalize(selectStmt);
-    }
-
-    // Pack children with expanded flag
-    ChildrenData data;
-    data.expanded = true;
-    data.fromShrink = fromShrink;
-    data.evolutions = evolutions;
-
-    std::vector<uint8_t> blob = packChildren(data);
-
-    // Update database
-    const char *updateSql = "UPDATE boards SET children = ? WHERE board_id = ?";
-    sqlite3_stmt *updateStmt;
-    int rc = sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nullptr);
-
-    if (rc != SQLITE_OK)
-    {
-        return false;
-    }
-
-    sqlite3_bind_blob(updateStmt, 1, blob.data(), blob.size(), SQLITE_TRANSIENT);
-    sqlite3_bind_blob(updateStmt, 2, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
-
-    rc = sqlite3_step(updateStmt);
-    sqlite3_finalize(updateStmt);
-
-    return rc == SQLITE_DONE;
-}
-
-std::vector<BoardID> Database::getBoardsByGeneration(int generation)
-{
-    std::vector<BoardID> boards;
-
-    const char *sql = "SELECT board_id FROM boards WHERE generation = ?";
-    sqlite3_stmt *stmt;
-
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    {
-        return boards;
-    }
-
-    sqlite3_bind_int(stmt, 1, generation);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW)
-    {
-        const void *data = sqlite3_column_blob(stmt, 0);
-        int size = sqlite3_column_bytes(stmt, 0);
-
-        BoardID id(static_cast<const uint8_t *>(data),
-                   static_cast<const uint8_t *>(data) + size);
-        boards.push_back(id);
     }
 
     sqlite3_finalize(stmt);
-    return boards;
+    return parents;
 }
 
-int Database::getUnexpandedCount()
+int Database::getParentCount(const BoardID &boardId)
 {
-    const char *sql = "SELECT COUNT(*) FROM boards WHERE (children IS NULL OR LENGTH(children) = 1)";
-
+    const char *sql = "SELECT parent_size, LENGTH(parents) FROM boards WHERE board_id = ?";
     sqlite3_stmt *stmt;
+
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    {
         return 0;
-    }
+
+    sqlite3_bind_blob(stmt, 1, boardId.data(), boardId.size(), SQLITE_TRANSIENT);
 
     int count = 0;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        count = sqlite3_column_int(stmt, 0);
+        int parentSize = sqlite3_column_int(stmt, 0);
+        int blobSize = sqlite3_column_int(stmt, 1);
+        if (parentSize > 0)
+        {
+            count = blobSize / parentSize;
+        }
     }
 
     sqlite3_finalize(stmt);
@@ -413,14 +510,12 @@ int Database::getUnexpandedCount()
 int Database::getTotalBoards()
 {
     const char *sql = "SELECT COUNT(*) FROM boards";
-
     sqlite3_stmt *stmt;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    {
-        return 0;
-    }
 
-    int count = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return -1;
+
+    int count = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
         count = sqlite3_column_int(stmt, 0);
@@ -430,22 +525,20 @@ int Database::getTotalBoards()
     return count;
 }
 
-int Database::getMaxGeneration()
+int Database::getUnexpandedCount()
 {
-    const char *sql = "SELECT MAX(generation) FROM boards";
-
+    const char *sql = "SELECT COUNT(*) FROM boards WHERE expanded = 0";
     sqlite3_stmt *stmt;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
-    {
-        return -1;
-    }
 
-    int maxGen = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return -1;
+
+    int count = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        maxGen = sqlite3_column_int(stmt, 0);
+        count = sqlite3_column_int(stmt, 0);
     }
 
     sqlite3_finalize(stmt);
-    return maxGen;
+    return count;
 }

@@ -7,24 +7,20 @@
 #include <sqlite3.h>
 #include "board_id.h"
 
-struct ChildrenData
-{
-    bool expanded;
-    bool fromShrink;
-    std::vector<BoardID> evolutions; // 330 evolution results
-};
-
 class Database
 {
 private:
     sqlite3 *db;
     std::string dbPath;
 
-    // Helper: Pack children data into MEDIUMBLOB
-    std::vector<uint8_t> packChildren(const ChildrenData &data);
+    // Helper: Get board size from BoardID length
+    int getBoardSizeFromId(const BoardID &id);
 
-    // Helper: Unpack MEDIUMBLOB into children data
-    ChildrenData unpackChildren(const std::vector<uint8_t> &blob);
+    // Helper: Get child ID byte count from parent BoardID
+    int getChildIdBytes(const BoardID &parentId);
+
+    // Helper: Get parent ID byte count from child BoardID
+    int getParentIdBytes(const BoardID &childId);
 
 public:
     Database(const std::string &path);
@@ -33,36 +29,42 @@ public:
     // Initialize database schema
     bool init();
 
-    // Insert a new board (unexpanded)
-    bool insertBoard(const BoardID &boardId, int generation, int size, bool fromShrink = false);
+    // Insert a new board (unexpanded, no parents)
+    bool insertBoard(const BoardID &boardId, bool trueParent = false);
 
     // Check if board exists
     bool boardExists(const BoardID &boardId);
 
-    // Get board metadata
-    std::optional<std::pair<int, int>> getBoardInfo(const BoardID &boardId); // returns {generation, size}
-
-    // Check if board is expanded
+    // Get board flags
     bool isExpanded(const BoardID &boardId);
+    bool isTrueParent(const BoardID &boardId);
 
-    // Get specific evolution result
+    // === Children operations ===
+
+    // Get specific evolution result (returns nullopt if not expanded)
     std::optional<BoardID> getEvolution(const BoardID &boardId, int rulesetId);
 
-    // Get all evolutions (returns empty if not expanded)
+    // Get all evolutions (returns nullopt if not expanded)
     std::optional<std::vector<BoardID>> getAllEvolutions(const BoardID &boardId);
 
     // Mark board as expanded with all evolution results
     bool setEvolutions(const BoardID &boardId, const std::vector<BoardID> &evolutions);
 
-    // Get all boards in a generation
-    std::vector<BoardID> getBoardsByGeneration(int generation);
+    // === Parent operations ===
 
-    // Get unexpanded boards count
-    int getUnexpandedCount();
+    // Add a parent to a board (handles size comparison and eviction)
+    bool addParent(const BoardID &childId, const BoardID &parentId);
 
-    // Statistics
+    // Get all parents of a board
+    std::vector<BoardID> getParents(const BoardID &boardId);
+
+    // Get parent count
+    int getParentCount(const BoardID &boardId);
+
+    // === Statistics ===
+
     int getTotalBoards();
-    int getMaxGeneration();
+    int getUnexpandedCount();
 };
 
 #endif // DATABASE_H

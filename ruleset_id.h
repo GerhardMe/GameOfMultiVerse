@@ -13,8 +13,8 @@ struct Ruleset
     bool operator==(const Ruleset &other) const;
 };
 
-// Generate all valid rulesets in canonical order
-std::vector<Ruleset> generateAllRulesets();
+// Initialize the ruleset system (call once at startup)
+void initRulesets();
 
 // Convert ruleset to ID (its index in canonical ordering)
 int rulesetToId(const Ruleset &ruleset);
@@ -22,7 +22,7 @@ int rulesetToId(const Ruleset &ruleset);
 // Convert ID to ruleset
 Ruleset idToRuleset(int id);
 
-// Get total number of valid rulesets
+// Get total number of valid rulesets (fast, pre-computed)
 int getTotalRulesets();
 
 #endif // RULESET_ID_H
